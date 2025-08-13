@@ -1,4 +1,4 @@
-// BM CW Decoder V1.02 main logic
+// BM CW Decoder V1.02 (TensorFlow.js enhanced, mic access improved & clear status)
 const logElem = document.getElementById('log');
 const statusElem = document.getElementById('status');
 const wpmElem = document.getElementById('wpmDisplay');
@@ -21,6 +21,13 @@ let keyTimings = [];
 let trainingData = [];
 let autoTrain = true;
 
+// TensorFlow.js model
+let model = null;
+
+// For mic
+let micToneState = 0, micToneStart = null, micTimings = [];
+let micPermissionDenied = false;
+
 // Load log and training data from localStorage
 function loadStored() {
   log = localStorage.getItem('bm_cw_log') || '';
@@ -32,6 +39,16 @@ function saveLog() {
 }
 function saveTraining() {
   localStorage.setItem('bm_cw_training', JSON.stringify(trainingData));
+}
+function saveModelWeights() {
+  if (model) model.save('localstorage://bm_cw_model');
+}
+async function loadModelWeights() {
+  try {
+    model = await tf.loadLayersModel('localstorage://bm_cw_model');
+  } catch {
+    model = null;
+  }
 }
 
 function renderLog() {
@@ -58,7 +75,13 @@ for (const radio of inputMethods) {
   radio.addEventListener('change', (e) => {
     method = e.target.value;
     wavUpload.disabled = method !== 'wav';
-    setStatus(`Selected input: ${method}`);
+    if (method === 'mic') {
+      setStatus('Click "Start" and allow microphone access, then send CW toward your mic.');
+    } else if (method === 'keyboard') {
+      setStatus('Click "Start" and use your Spacebar as CW key.');
+    } else {
+      setStatus('Choose and upload a WAV file, then click "Start".');
+    }
   });
 }
 
@@ -68,11 +91,51 @@ startBtn.onclick = async () => {
   decoding = true;
   stopBtn.disabled = false;
   startBtn.disabled = true;
-  setStatus('Decoding started...');
-  if (method === 'mic') startMicrophone();
-  else if (method === 'keyboard') startKeyboard();
-  else if (method === 'wav') {
+  micPermissionDenied = false;
+  if (method === 'mic') {
+    setStatus('Requesting microphone access. Please allow access if prompted.');
+    await ensureModel();
+    // Request mic access only on click
+    navigator.mediaDevices.getUserMedia({audio: true})
+      .then(async stream => {
+        audioStream = stream;
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') {
+          try {
+            await audioCtx.resume();
+          } catch (e) {
+            setStatus('AudioContext could not be resumed. Try clicking Start again or check browser permissions.');
+            stopDecoding();
+            return;
+          }
+        }
+        analyser = audioCtx.createAnalyser();
+        const source = audioCtx.createMediaStreamSource(stream);
+        analyser.fftSize = 1024;
+        source.connect(analyser);
+        micProcessor = setInterval(() => {
+          const data = new Uint8Array(analyser.fftSize);
+          analyser.getByteTimeDomainData(data);
+          let max = Math.max(...data);
+          let min = Math.min(...data);
+          let amp = (max - min) / 256;
+          processMicAmplitude(amp);
+        }, 8);
+        setStatus('Mic access granted! Send CW tone toward your mic.');
+      })
+      .catch(err => {
+        micPermissionDenied = true;
+        setStatus('Microphone access denied or unavailable. Please grant permission and retry.');
+        stopDecoding();
+      });
+  } else if (method === 'keyboard') {
+    setStatus('Press and release Spacebar to send Morse. Press "Stop" to decode.');
+    await ensureModel();
+    startKeyboard();
+  } else if (method === 'wav') {
     if (wavUpload.files[0]) {
+      setStatus('Processing WAV file...');
+      await ensureModel();
       decodeWavFile(wavUpload.files[0]);
     } else {
       setStatus('Please upload a WAV file.');
@@ -90,6 +153,34 @@ clearBtn.onclick = () => {
   setStatus('Log cleared.');
   updateWPM(null);
 };
+
+// TensorFlow.js: Build or load model
+async function ensureModel() {
+  await loadModelWeights();
+  if (model) return;
+  // input: [duration, gap]
+  model = tf.sequential();
+  model.add(tf.layers.dense({units: 16, activation: 'relu', inputShape: [2]}));
+  model.add(tf.layers.dense({units: 8, activation: 'relu'}));
+  model.add(tf.layers.dense({units: 3, activation: 'softmax'})); // dot, dash, gap
+  model.compile({optimizer: 'adam', loss: 'categoricalCrossentropy', metrics: ['accuracy']});
+  // If training data exists, train
+  if (trainingData.length > 5) await trainModel();
+}
+async function trainModel() {
+  if (!model || trainingData.length < 6) return;
+  setStatus("Training model...");
+  // trainingData: {duration, gap, label: 0-dot,1-dash,2-gap}
+  const xs = tf.tensor2d(trainingData.map(d => [d.duration, d.gap]));
+  const ys = tf.tensor2d(trainingData.map(d => {
+    if (d.label === 0) return [1,0,0];
+    if (d.label === 1) return [0,1,0];
+    return [0,0,1];
+  }));
+  await model.fit(xs, ys, {epochs: 30, batchSize: 8});
+  saveModelWeights();
+  setStatus("Model trained.");
+}
 
 // WAV File decode (basic, not perfect - for demonstration)
 function decodeWavFile(file) {
@@ -119,36 +210,9 @@ function decodeWavFile(file) {
   reader.readAsArrayBuffer(file);
 }
 
-// Microphone decode (simple)
-function startMicrophone() {
-  navigator.mediaDevices.getUserMedia({audio: true})
-    .then(stream => {
-      audioStream = stream;
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      analyser = audioCtx.createAnalyser();
-      const source = audioCtx.createMediaStreamSource(stream);
-      analyser.fftSize = 1024;
-      source.connect(analyser);
-      micProcessor = setInterval(() => {
-        const data = new Uint8Array(analyser.fftSize);
-        analyser.getByteTimeDomainData(data);
-        let max = Math.max(...data);
-        let min = Math.min(...data);
-        let amp = (max - min) / 256;
-        processMicAmplitude(amp);
-      }, 8);
-      setStatus('Listening to microphone...');
-    })
-    .catch(() => {
-      setStatus('Microphone access denied.');
-      stopDecoding();
-    });
-  micToneState = 0;
-  micToneStart = null;
-  micTimings = [];
-}
-let micToneState = 0, micToneStart = null, micTimings = [];
+// Microphone amplitude handler
 function processMicAmplitude(amp) {
+  if (micPermissionDenied) return;
   const threshold = 0.09;
   if (amp > threshold && micToneState === 0) {
     micToneStart = performance.now();
@@ -157,7 +221,7 @@ function processMicAmplitude(amp) {
     let end = performance.now();
     micTimings.push({start: micToneStart, end: end});
     micToneState = 0;
-    // Stop after 15s or 80 beeps for demo
+    // Stop after 80 beeps or 15s
     if (micTimings.length > 80 || (micTimings.length && (micTimings[micTimings.length-1].end - micTimings[0].start > 15000))) {
       stopDecoding();
       decodeTimings(micTimings, 1000); // ms based
@@ -167,7 +231,6 @@ function processMicAmplitude(amp) {
 
 // Keyboard input (spacebar = key down)
 function startKeyboard() {
-  setStatus('Press and release Spacebar to send Morse. Press "Stop" to decode.');
   keyTimings = [];
   keyPressStart = null;
   document.body.onkeydown = (e) => {
@@ -194,7 +257,7 @@ function stopDecoding() {
   decoding = false;
   stopBtn.disabled = true;
   startBtn.disabled = false;
-  setStatus('Stopped.');
+  if (!micPermissionDenied) setStatus('Stopped.');
   if (audioStream) {
     audioStream.getTracks().forEach(t => t.stop());
     audioStream = null;
@@ -211,8 +274,9 @@ function stopDecoding() {
   document.body.onkeyup = null;
 }
 
-// Decode timings to Morse
-function decodeTimings(times, sampleRate) {
+// Decode timings to Morse (TensorFlow.js powered)
+async function decodeTimings(times, sampleRate) {
+  await ensureModel();
   // Calculate durations (dit, dah, gaps)
   let durations = times.map(t => (t.end-t.start)/sampleRate);
   let gaps = [];
@@ -221,27 +285,32 @@ function decodeTimings(times, sampleRate) {
   }
   // Estimate dit length (shortest tone)
   let dit = Math.min(...durations);
-  let dah = dit*3;
-  // Estimate WPM
   wpm = 1.2 / dit;
   updateWPM(wpm);
 
-  // Train on previous logs (simple: adjust dit/dah ratio)
-  if (autoTrain && trainingData.length) {
-    let ditArr = trainingData.map(d => d.dit);
-    let avgDit = ditArr.reduce((a,b)=>a+b,0)/ditArr.length;
-    if (avgDit && Math.abs(avgDit - dit) < 0.05) dit = avgDit;
-    dah = dit*3;
-  }
-
-  // Build morse string
+  // Use TF.js model for classification
   let morse = '';
   for (let i = 0; i < durations.length; i++) {
-    morse += durations[i] < (dit*1.7) ? '.' : '-';
     let gap = gaps[i] || 0;
-    if (gap > dit*2.5 && gap < dah*3) morse += ' '; // letter gap
-    if (gap >= dah*3) morse += ' / '; // word gap
+    let input = tf.tensor2d([[durations[i], gap]]);
+    let pred = model.predict(input);
+    let arr = await pred.array();
+    let idx = arr[0].indexOf(Math.max(...arr[0])); // 0-dot, 1-dash, 2-gap
+    // Fallback for first run
+    if (isNaN(idx)) {
+      idx = durations[i] < (dit*1.7) ? 0 : 1;
+    }
+    if (idx === 0) morse += '.';
+    else if (idx === 1) morse += '-';
+    // For gap, add separator
+    if (gap > dit*2.5 && gap < dit*6) morse += ' ';
+    if (gap >= dit*6) morse += ' / ';
+    // Save for training
+    trainingData.push({duration: durations[i], gap, label: idx});
   }
+
+  saveTraining();
+  await trainModel();
 
   // Decode and log
   let decoded = morse.split(' / ').map(word =>
@@ -251,10 +320,6 @@ function decodeTimings(times, sampleRate) {
   saveLog();
   renderLog();
   setStatus('Decoded: ' + decoded);
-
-  // Save training
-  trainingData.push({dit, dah, wpm, morse, decoded, time: Date.now()});
-  saveTraining();
 }
 
 // Utility: get UTC date/time
@@ -263,5 +328,9 @@ function getUTC() {
   return now.toISOString().replace('T',' ').substring(0,19) + ' UTC';
 }
 
-// Load stored data/log on page load
-loadStored();
+// On page load, show instructions for mic
+window.onload = function() {
+  loadStored();
+  ensureModel();
+  setStatus('Click "Start" and allow microphone access, then send CW toward your mic.');
+};
