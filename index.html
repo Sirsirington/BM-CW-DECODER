@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>BM CW Decoder V1.02</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs"></script>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="title">BM CW Decoder V1.02</div>
+      <div class="datetime" id="datetime"></div>
+    </div>
+    <div class="controls">
+      <input type="file" id="wavUpload" accept=".wav" />
+      <button id="startBtn">Start</button>
+      <button id="stopBtn" disabled>Stop</button>
+      <button id="clearBtn">Clear Log</button>
+    </div>
+    <div class="input-methods">
+      <label><input type="radio" name="inputMethod" value="mic" checked> Microphone</label>
+      <label><input type="radio" name="inputMethod" value="keyboard"> Keyboard</label>
+      <label><input type="radio" name="inputMethod" value="wav"> WAV File</label>
+    </div>
+    <div class="decoder-status" id="status">Ready.</div>
+    <div class="wpm-display" id="wpmDisplay">WPM: --</div>
+    <div class="log-title">Log:</div>
+    <div class="log" id="log"></div>
+  </div>
+  <script src="morse.js"></script>
+  <script src="bm-cw-decoder-tf.js"></script>
+</body>
+</html>
