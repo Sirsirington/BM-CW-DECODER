@@ -111,6 +111,49 @@ function decodeWavFile(file) {
           times.push({start, end: i});
           last = 0;
         }
+        // --- Morse Sample Database UI ---
+
+// Load sample list
+function loadSampleDatabaseUI() {
+  const select = document.getElementById('sampleSelect');
+  const info = document.getElementById('sampleInfo');
+  MORSE_SAMPLES.forEach((sample, i) => {
+    const opt = document.createElement('option');
+    opt.value = i;
+    opt.textContent = `${sample.label} (${sample.wpm} WPM)`;
+    select.appendChild(opt);
+  });
+  select.onchange = () => {
+    const sample = MORSE_SAMPLES[select.value];
+    info.innerHTML = `<b>Expected text:</b> <code>${sample.text}</code>`;
+  };
+  select.onchange(); // init display
+}
+
+document.getElementById('playSample').onclick = () => {
+  const idx = document.getElementById('sampleSelect').value;
+  const sample = MORSE_SAMPLES[idx];
+  const audio = new Audio(sample.file);
+  audio.play();
+};
+
+document.getElementById('decodeSample').onclick = () => {
+  const idx = document.getElementById('sampleSelect').value;
+  const sample = MORSE_SAMPLES[idx];
+  fetch(sample.file)
+    .then(resp => resp.blob())
+    .then(blob => {
+      // Use your existing decodeWavFile(blob)
+      decodeWavFile(blob);
+      setStatus(`Decoding sample: ${sample.label} (${sample.wpm} WPM). Expected: ${sample.text}`);
+    });
+};
+
+// Run on load
+window.onload = function() {
+  // ...your existing code...
+  if (typeof MORSE_SAMPLES !== "undefined") loadSampleDatabaseUI();
+};
       }
       stopDecoding();
       decodeTimings(times, audioBuffer.sampleRate);
@@ -264,4 +307,5 @@ function getUTC() {
 }
 
 // Load stored data/log on page load
+
 loadStored();
